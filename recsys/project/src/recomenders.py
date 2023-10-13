@@ -6,6 +6,7 @@ from collections import namedtuple
 from scipy.sparse import csr_matrix
 
 # Матричная факторизация
+from lightfm import LightFM
 from implicit.als import AlternatingLeastSquares
 from implicit.bpr import BayesianPersonalizedRanking
 from implicit.nearest_neighbours import ItemItemRecommender  # нужен для одного трюка
@@ -55,7 +56,8 @@ class MainRecommender:
     user_item_matrix: pd.DataFrame
         Матрица взаимодействий user-item
     """
-    MODEL_TYPES = namedtuple("M_TYPES", ["ALS", "BPR", "ItemItem"])(0, 1, 2)
+    MODEL_TYPES = namedtuple("M_TYPES", ["ALS", "BPR", "ItemItem", "LightFM"])(0, 1, 2, 3)
+    WEIGHT_TYPES = namedtuple("W_TYPES", ["NO_WEIGHT", "TFIDF", "BM25"])(0, 1, 2)
 
     def __init__(self, user_info):
         # your_code. Это не обязательная часть. Но если вам удобно что-либо посчитать тут - можно это сделать
@@ -74,14 +76,15 @@ class MainRecommender:
         self.userid_to_id = {}
 
         self.user_item_matrix = None
+        self.user_features = None
+        self.item_features = None
         self.model = None
 
     def set_model_type(self, model_type, **kwargs):
         self.model_type = model_type
         self.fit_params = kwargs
 
-    def fit(self, user_item_matrix, weighting=True):
-        """Обучает ALS"""
+    def fit(self, user_item_matrix, weighting=None):
 
         userids = user_item_matrix.index.values
         itemids = user_item_matrix.columns.values
@@ -95,8 +98,10 @@ class MainRecommender:
         self.itemid_to_id = dict(zip(itemids, matrix_itemids))
         self.userid_to_id = dict(zip(userids, matrix_userids))
 
-        if weighting:
+        if weighting == self.WEIGHT_TYPES.BM25:
             user_item_matrix = bm25_weight(user_item_matrix.T).T
+        elif weighting == self.WEIGHT_TYPES.TFIDF:
+            user_item_matrix = tfidf_weight(user_item_matrix.T).T
 
         self.user_item_matrix = csr_matrix(user_item_matrix)
 
@@ -107,12 +112,25 @@ class MainRecommender:
             model = BayesianPersonalizedRanking(**self.fit_params)
 
         elif self.model_type == MainRecommender.MODEL_TYPES.ItemItem:
+            self.user_item_matrix = self.user_item_matrix.astype(np.double)
             model = ItemItemRecommender(**self.fit_params)
+        elif self.model_type == MainRecommender.MODEL_TYPES.LightFM:
+            self.user_features = csr_matrix(self.fit_params.pop('user_features').values).tocsr()
+            self.item_features = csr_matrix(self.fit_params.pop("item_features").values).tocsr()
+            epochs = self.fit_params.pop("epochs")
+            num_threads = self.fit_params.pop("num_threads")
+            model = LightFM(**self.fit_params)
 
         else:
             model = None
-
-        model.fit(self.user_item_matrix.T.tocsr())
+        if self.model_type == MainRecommender.MODEL_TYPES.LightFM:
+            model.fit((self.user_item_matrix.tocsr() > 0) * 1,
+                      user_features=self.user_features,
+                      item_features=self.item_features,
+                      epochs=epochs,
+                      num_threads=num_threads)
+        else:
+            model.fit(self.user_item_matrix.tocsr())
         self.model = model
 
     def get_model(self):
@@ -120,28 +138,45 @@ class MainRecommender:
 
     def get_similar_items_recommendation(self, user, N=5):
         """Рекомендуем товары, похожие на топ-N купленных юзером товаров"""
-        N_items = self.user_info.loc[self.user_info["user_id"] == user]["actual"][:N]
-        N_id = []
-        for item in N_items:
-            for item_id in item:
-                N_id.append(self.itemid_to_id[item_id])
-        similar_items = self.model.similar_items(N_id,
-                                                 N=5,
-                                                 # item_users=self.user_item_matrix.T.tocsr()
-                                                 )
-        recommendations = []
-        for similar_item in similar_items[0]:
-            for item_id in similar_item:
-                real_item_id = self.id_to_itemid.get(item_id)
-                if real_item_id is not None:
-                    recommendations.append(real_item_id)
+        if self.model_type == MainRecommender.MODEL_TYPES.LightFM:
+            recommendations = self.model.predict(user, list(self.itemid_to_id.keys()),
+                                                 user_features=self.user_features,
+                                                 item_features=self.item_features
+                                                 )[0][:N]
+        else:
+            N_items = self.user_info.loc[self.user_info["user_id"] == user]["actual"][:N]
+            N_id = []
+            for item in N_items:
+                for item_id in item:
+                    N_id.append(self.itemid_to_id[item_id])
+            similar_items = self.model.similar_items(N_id,
+                                                     N=N,)
+            recommendations = []
+            for similar_item in similar_items[0]:
+                for item_id in similar_item:
+                    real_item_id = self.id_to_itemid.get(item_id)
+                    if real_item_id is not None:
+                        recommendations.append(real_item_id)
         return recommendations
 
-    # def get_similar_users_recommendation(self, user, N=5):
-    #     """Рекомендуем топ-N товаров, среди купленных похожими юзерами"""
-    #
-    #     # your_code
-    #
-    #     assert len(res) == N, 'Количество рекомендаций != {}'.format(N)
-    #     return res
+    def get_similar_users_recommendation(self, user, N=5):
+        """Рекомендуем топ-N товаров, среди купленных похожими юзерами"""
+        if self.model_type == MainRecommender.MODEL_TYPES.LightFM:
+            result_items = []
+        else:
+            try:
+                similar_users = self.model.similar_users(self.userid_to_id[user],
+                                                         N=N)
+                result_items = set()
+                for user in similar_users[0]:
+                    real_user = self.id_to_userid.get(user)
+                    if real_user is not None:
+                        items = self.user_info.loc[self.user_info["user_id"] == real_user]["actual"][:N]
+                        for item in items:
+                            for item_id in item:
+                                result_items.add(item_id)
+            except NotImplementedError:
+                result_items = []
+
+        return list(result_items)
 

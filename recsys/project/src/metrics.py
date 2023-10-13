@@ -1,8 +1,10 @@
 import numpy as np
 
-
 def indicate_at_k(recommended_list: list, bought_list: list, k=-1):
-    recommended_list = np.asarray(recommended_list) if k == -1 else np.asarray(recommended_list)[:k]
+    if len(recommended_list) != 0:
+        recommended_list = np.asarray(recommended_list) if k == -1 else np.asarray(recommended_list)[:k]
+    else:
+        recommended_list = np.asarray([0])
     bought_list = np.asarray(bought_list)
 
     return np.isin(recommended_list, bought_list)
