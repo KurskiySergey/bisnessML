@@ -56,7 +56,7 @@ class MainRecommender:
     user_item_matrix: pd.DataFrame
         Матрица взаимодействий user-item
     """
-    MODEL_TYPES = namedtuple("M_TYPES", ["ALS", "BPR", "ItemItem", "LightFM"])(0, 1, 2, 3)
+    MODEL_TYPES = namedtuple("M_TYPES", ["ALS", "BPR", "ItemItem", "LightFM", "LightGBM"])(0, 1, 2, 3, 4)
     WEIGHT_TYPES = namedtuple("W_TYPES", ["NO_WEIGHT", "TFIDF", "BM25"])(0, 1, 2)
 
     def __init__(self, user_info):
@@ -151,13 +151,13 @@ class MainRecommender:
                     N_id.append(self.itemid_to_id[item_id])
             similar_items = self.model.similar_items(N_id,
                                                      N=N,)
-            recommendations = []
+            recommendations = set()
             for similar_item in similar_items[0]:
                 for item_id in similar_item:
                     real_item_id = self.id_to_itemid.get(item_id)
                     if real_item_id is not None:
-                        recommendations.append(real_item_id)
-        return recommendations
+                        recommendations.add(real_item_id)
+        return list(recommendations)
 
     def get_similar_users_recommendation(self, user, N=5):
         """Рекомендуем топ-N товаров, среди купленных похожими юзерами"""
