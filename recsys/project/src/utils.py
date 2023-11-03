@@ -16,11 +16,37 @@ def load_csv_dataset(dataset_name=None):
 
     return dataset
 
+
 def split_dataset(dataset, test_size_weeks = 3):
     data_train = dataset[dataset['week_no'] < dataset['week_no'].max() - test_size_weeks]
     data_test = dataset[dataset['week_no'] >= dataset['week_no'].max() - test_size_weeks]
     return data_train, data_test
 
+
+class Postprocess:
+
+    def __init__(self):
+        pass
+
+    def fit(self, data: list, copy_input=True):
+        result_data = data.copy() if copy_input else data
+        pipeline = [
+            self.__unique_items,
+            self.__unique_categories
+        ]
+
+        for pipe in pipeline:
+            result_data = pipe(result_data)
+
+        return result_data
+
+    def __unique_items(self, data: list):
+        unique_items = []
+        [unique_items.append(item) for item in data if item not in unique_items]
+        return unique_items
+
+    def __unique_categories(self, data: list):
+        return data
 
 class Preprocess:
 
